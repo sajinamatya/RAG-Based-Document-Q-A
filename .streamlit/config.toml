@@ -1,0 +1,29 @@
+[global]
+# Streamlit sharing settings
+dataFrameSerialization = "legacy"
+
+[server]
+# Server settings
+port = 8501
+enableCORS = false
+enableXsrfProtection = true
+maxUploadSize = 200
+maxMessageSize = 200
+
+[browser]
+# Browser settings
+gatherUsageStats = false
+showErrorDetails = true
+
+[theme]
+# UI Theme
+primaryColor = "#1f77b4"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+font = "sans serif"
+
+[client]
+# Client settings
+caching = true
+displayEnabled = true
