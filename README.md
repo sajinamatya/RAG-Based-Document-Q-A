@@ -269,7 +269,7 @@ python main.py --stats
 │ File Handler    │    │   Query Engine   │    │ Cache Manager   │
 │ - PDF Reader    │    │ - Retriever      │    │ - Redis         │
 │ - DOCX Reader   │    │ - Post-processor │    │ - Search Cache  │
-│ - Text Splitter │    │ - LLM (OpenAI)   │    │ - Embeddings    │
+│ - Text Splitter │    │ - LLM            │    │ - Embeddings    │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
                               │
                               ▼
