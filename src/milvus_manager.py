@@ -1,159 +1,268 @@
-from typing import List, Optional, Dict, Any
+import os
 import logging
-
-from llama_index.core import Document
+from typing import List, Dict, Any, Optional
+from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 from llama_index.vector_stores.milvus import MilvusVectorStore
-from llama_index.core.vector_stores import VectorStoreQuery
-from llama_index.embeddings.openai import OpenAIEmbedding
-from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
-
+from llama_index.core import StorageContext, VectorStoreIndex
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
-
 
 class MilvusManager:
     """Manages Milvus vector database operations."""
     
     def __init__(self):
         self.settings = settings
-        self.connection_alias = "default"
-        self.collection_name = self.settings.milvus_collection_name
-        self.dim = self.settings.embedding_dimension
+        self.collection_name = "documents"
+        self.collection = None
         self.vector_store = None
+        self.connection_alias = "default"
         self._connect()
-        self._create_collection_if_not_exists()
     
     def _connect(self):
-        """Connect to Milvus database."""
+        """Connect to Milvus with improved connection handling."""
         try:
             # Check if connection already exists
-            if self.connection_alias in connections.list_connections():
-                connections.remove_connection(self.connection_alias)
+            existing_connections = connections.list_connections()
             
-            connections.connect(
-                alias=self.connection_alias,
-                host=self.settings.milvus_host,
-                port=self.settings.milvus_port,
-                user=self.settings.milvus_user or "",
-                password=self.settings.milvus_password or "",
-                secure=False  # Set to False for local connections
-            )
+            if self.connection_alias in existing_connections:
+                logger.info(f"Using existing Milvus connection: {self.connection_alias}")
+            else:
+                # Create new connection
+                connections.connect(
+                    alias=self.connection_alias,
+                    host=self.settings.milvus_host,
+                    port=self.settings.milvus_port
+                )
+                logger.info("Created new Milvus connection successfully")
+            
+            # Test connection
+            utility.get_server_version(using=self.connection_alias)
             logger.info("Connected to Milvus successfully")
+            
+            # Initialize collection and vector store
+            self._initialize_collection()
+            self._initialize_vector_store()
+            
         except Exception as e:
             logger.error(f"Failed to connect to Milvus: {e}")
             raise
     
-    def _create_collection_if_not_exists(self):
-        """Create collection if it doesn't exist."""
-        if not utility.has_collection(self.collection_name):
-            # Define collection schema
+    def _initialize_vector_store(self):
+        """Initialize vector store with existing connection."""
+        try:
+            # Use proper URI format with tcp protocol for remote Milvus connection
+            milvus_uri = f"tcp://{self.settings.milvus_host}:{self.settings.milvus_port}"
+            
+            self.vector_store = MilvusVectorStore(
+                uri=milvus_uri,
+                collection_name=self.collection_name,
+                dim=1536,
+                overwrite=False,
+                token=""  # Empty token for non-Zilliz connections
+            )
+            logger.info(f"Vector store initialized with URI: {milvus_uri}")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize vector store: {e}")
+            # Fall back to direct collection usage
+            self.vector_store = None
+    
+    def _initialize_collection(self):
+        """Initialize or get existing collection."""
+        try:
+            if utility.has_collection(self.collection_name, using=self.connection_alias):
+                self.collection = Collection(self.collection_name, using=self.connection_alias)
+                logger.info(f"Using existing collection: {self.collection_name}")
+            else:
+                self._create_collection()
+            
+            # Load collection to memory
+            if not self.collection.has_index():
+                self._create_index()
+            
+            self.collection.load()
+            logger.info(f"Collection {self.collection_name} loaded successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize collection: {e}")
+            raise
+    
+    def _create_collection(self):
+        """Create collection with schema."""
+        try:
+            # Define schema
             fields = [
-                FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
+                FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=65535, is_primary=True),
                 FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-                FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self.dim),
-                FieldSchema(name="metadata", dtype=DataType.JSON),
+                FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=1536),
+                FieldSchema(name="metadata", dtype=DataType.JSON)
             ]
             
-            schema = CollectionSchema(fields=fields, description="LlamaIndex documents")
+            schema = CollectionSchema(
+                fields=fields,
+                description="RAG document collection",
+                enable_dynamic_field=True
+            )
             
-            # Create collection
-            collection = Collection(
+            self.collection = Collection(
                 name=self.collection_name,
                 schema=schema,
                 using=self.connection_alias
             )
             
-            # Create index for vector field
+            logger.info(f"Created collection: {self.collection_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to create collection: {e}")
+            raise
+    
+    def _create_index(self):
+        """Create index for the collection."""
+        try:
             index_params = {
                 "metric_type": "COSINE",
                 "index_type": "IVF_FLAT",
                 "params": {"nlist": 128}
             }
-            collection.create_index(field_name="embedding", index_params=index_params)
-            logger.info(f"Created collection '{self.collection_name}' with index")
-        
-        # Initialize vector store using URI (for Docker Milvus)
-        self.vector_store = MilvusVectorStore(
-            uri=f"http://{self.settings.milvus_host}:{self.settings.milvus_port}",
-            collection_name=self.collection_name,
-            dim=self.dim,
-            overwrite=False
-        )
-    
-    def get_vector_store(self) -> MilvusVectorStore:
-        """Get the vector store instance."""
-        return self.vector_store
-    
-    def add_documents(self, documents: List[Document]) -> List[str]:
-        """Add documents to the vector store."""
-        try:
-            node_ids = []
-            for doc in documents:
-                # Add document to vector store
-                self.vector_store.add([doc])
-                node_ids.append(doc.node_id if hasattr(doc, 'node_id') else str(id(doc)))
             
-            logger.info(f"Added {len(documents)} documents to Milvus")
-            return node_ids
-        except Exception as e:
-            logger.error(f"Error adding documents to Milvus: {e}")
-            raise
-    
-    def search(self, query_embedding: List[float], top_k: int = 10) -> List[Dict]:
-        """Search for similar documents."""
-        try:
-            query = VectorStoreQuery(
-                query_embedding=query_embedding,
-                similarity_top_k=top_k
+            self.collection.create_index(
+                field_name="embedding",
+                index_params=index_params
             )
             
-            result = self.vector_store.query(query)
-            return [
-                {
-                    "node": node,
-                    "score": score
-                }
-                for node, score in zip(result.nodes, result.similarities)
-            ]
+            logger.info("Created collection index")
+            
         except Exception as e:
-            logger.error(f"Error searching Milvus: {e}")
+            logger.error(f"Failed to create index: {e}")
             raise
     
-    def delete_documents(self, doc_ids: List[str]) -> bool:
-        """Delete documents by IDs."""
+    def is_connected(self) -> bool:
+        """Check if Milvus is connected."""
         try:
-            collection = Collection(self.collection_name)
-            collection.delete(expr=f'id in {doc_ids}')
-            logger.info(f"Deleted {len(doc_ids)} documents from Milvus")
+            if self.connection_alias not in connections.list_connections():
+                return False
+            utility.get_server_version(using=self.connection_alias)
             return True
-        except Exception as e:
-            logger.error(f"Error deleting documents from Milvus: {e}")
+        except:
             return False
     
-    def get_collection_stats(self) -> Dict[str, Any]:
+    def add_documents(self, documents: List[Dict[str, Any]]) -> bool:
+        """Add documents to the collection."""
+        try:
+            if not self.is_connected() or not self.collection:
+                logger.error("Milvus not connected or collection not initialized")
+                return False
+            
+            # Prepare data for insertion
+            ids = [doc["id"] for doc in documents]
+            texts = [doc["text"] for doc in documents]
+            embeddings = [doc["embedding"] for doc in documents]
+            metadata = [doc.get("metadata", {}) for doc in documents]
+            
+            # Insert data
+            self.collection.insert([ids, texts, embeddings, metadata])
+            self.collection.flush()
+            
+            logger.info(f"Added {len(documents)} documents to Milvus")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to add documents: {e}")
+            return False
+    
+    def search_similar(self, query_embedding: List[float], top_k: int = 5) -> List[Dict]:
+        """Search for similar documents."""
+        try:
+            if not self.is_connected() or not self.collection:
+                logger.error("Milvus not connected or collection not initialized")
+                return []
+            
+            search_params = {
+                "metric_type": "COSINE",
+                "params": {"nprobe": 10}
+            }
+            
+            results = self.collection.search(
+                data=[query_embedding],
+                anns_field="embedding",
+                param=search_params,
+                limit=top_k,
+                output_fields=["text", "metadata"]
+            )
+            
+            # Process results
+            similar_docs = []
+            for hits in results:
+                for hit in hits:
+                    similar_docs.append({
+                        "id": hit.id,
+                        "text": hit.entity.get("text"),
+                        "metadata": hit.entity.get("metadata"),
+                        "score": hit.score
+                    })
+            
+            return similar_docs
+            
+        except Exception as e:
+            logger.error(f"Failed to search documents: {e}")
+            return []
+    
+    def get_collection_stats(self):
         """Get collection statistics."""
         try:
-            collection = Collection(self.collection_name)
-            collection.load()
+            if not self.is_connected() or not self.collection:
+                return None
+                
+            # Refresh collection stats
+            self.collection.flush()
+            
             stats = {
-                "total_documents": collection.num_entities,
+                "entity_count": self.collection.num_entities,
                 "collection_name": self.collection_name,
-                "dimension": self.dim
+                "connection_status": "Connected",
+                "has_index": self.collection.has_index(),
+                "is_loaded": True
             }
             return stats
         except Exception as e:
             logger.error(f"Error getting collection stats: {e}")
-            return {}
+            return None
     
-    def clear_collection(self) -> bool:
-        """Clear all documents from the collection."""
+    def get_vector_store(self):
+        """Get the vector store for LlamaIndex."""
+        if self.vector_store:
+            return self.vector_store
+        else:
+            # Return a simple wrapper if vector store initialization failed
+            logger.warning("Using fallback vector store")
+            return self._create_fallback_vector_store()
+    
+    def _create_fallback_vector_store(self):
+        """Create a fallback vector store that uses the collection directly."""
+        class FallbackVectorStore:
+            def __init__(self, milvus_manager):
+                self.manager = milvus_manager
+            
+            def add(self, nodes):
+                # Convert nodes to documents format
+                documents = []
+                for node in nodes:
+                    documents.append({
+                        "id": node.node_id,
+                        "text": node.text,
+                        "embedding": node.embedding,
+                        "metadata": node.metadata
+                    })
+                return self.manager.add_documents(documents)
+        
+        return FallbackVectorStore(self)
+    
+    def disconnect(self):
+        """Disconnect from Milvus."""
         try:
-            collection = Collection(self.collection_name)
-            collection.drop()
-            self._create_collection_if_not_exists()
-            logger.info("Cleared collection successfully")
-            return True
+            if self.connection_alias in connections.list_connections():
+                connections.disconnect(self.connection_alias)
+                logger.info("Disconnected from Milvus")
         except Exception as e:
-            logger.error(f"Error clearing collection: {e}")
-            return False
+            logger.error(f"Error disconnecting from Milvus: {e}")

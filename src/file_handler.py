@@ -105,7 +105,16 @@ class FileUploadHandler:
             doc_nodes = self.text_splitter.get_nodes_from_documents([document])
             nodes.extend(doc_nodes)
         
-        return nodes
+        # Convert nodes back to documents for consistency
+        processed_docs = []
+        for node in nodes:
+            doc = Document(
+                text=node.text,
+                metadata=node.metadata
+            )
+            processed_docs.append(doc)
+        
+        return processed_docs
     
     def get_uploaded_files(self) -> List[Path]:
         """Get list of all uploaded files."""
