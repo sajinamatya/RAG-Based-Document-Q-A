@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash"
     gemini_embedding_model: str = "models/embedding-001"
     
+    # HuggingFace Configuration
+    huggingface_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_dim: int = 384  # Dimension for all-MiniLM-L6-v2
+    use_huggingface_embeddings: bool = True  # Switch between Gemini and HuggingFace
     
     # Milvus Configuration
     milvus_host: str = "localhost"

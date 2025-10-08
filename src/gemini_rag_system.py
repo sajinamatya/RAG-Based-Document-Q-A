@@ -1,5 +1,5 @@
 """
-Alternative RAG system using only Google Gemini (both LLM and embeddings)
+RAG system with flexible embedding support (Gemini or HuggingFace)
 """
 
 import logging
@@ -9,6 +9,7 @@ from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.gemini import GeminiEmbedding
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core import Settings as LlamaSettings
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.query_engine import RetrieverQueryEngine
@@ -21,7 +22,7 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 class GeminiRAGSystem:
-    """RAG system using Gemini for both LLM and embeddings."""
+    """RAG system using Gemini LLM with flexible embeddings (HuggingFace or Gemini)."""
     
     def __init__(self):
         self.settings = settings
@@ -40,7 +41,7 @@ class GeminiRAGSystem:
     def _initialize_components(self):
         """Initialize all RAG components."""
         try:
-            logger.info("Initializing Gemini RAG system...")
+            logger.info("Initializing RAG system...")
             
             # Initialize Gemini LLM
             self.llm = Gemini(
@@ -49,11 +50,18 @@ class GeminiRAGSystem:
                 temperature=0.1
             )
             
-            # Initialize Gemini embeddings
-            self.embed_model = GeminiEmbedding(
-                model_name=self.settings.gemini_embedding_model,
-                api_key=self.settings.google_api_key
-            )
+            # Initialize embeddings based on configuration
+            if self.settings.use_huggingface_embeddings:
+                logger.info(f"Using HuggingFace embeddings: {self.settings.huggingface_model}")
+                self.embed_model = HuggingFaceEmbedding(
+                    model_name=self.settings.huggingface_model
+                )
+            else:
+                logger.info(f"Using Gemini embeddings: {self.settings.gemini_embedding_model}")
+                self.embed_model = GeminiEmbedding(
+                    model_name=self.settings.gemini_embedding_model,
+                    api_key=self.settings.google_api_key
+                )
             
             # Set global LlamaIndex settings
             LlamaSettings.llm = self.llm
